@@ -2,12 +2,19 @@ import os
 import asyncpg
 from dotenv import load_dotenv
 import datetime
+import logging
+import sys
 import discord
 import asyncio
-import logging
+
+# Configure logging to show more details
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
@@ -18,18 +25,33 @@ class ConfigManager:
         if not self.pool:
             # Get PostgreSQL connection URL from Railway's environment variable
             database_url = os.getenv('DATABASE_URL')
+            
+            # Print all environment variables (excluding sensitive values)
+            logger.info("Available environment variables:")
+            for key in os.environ:
+                if 'TOKEN' in key or 'KEY' in key or 'PASSWORD' in key or 'SECRET' in key:
+                    logger.info(f"{key}: [REDACTED]")
+                else:
+                    logger.info(f"{key}: {os.environ[key]}")
+            
             if not database_url:
                 logger.error("DATABASE_URL environment variable not set!")
                 logger.info("Please set the DATABASE_URL in your Railway project variables")
-                return  # Return instead of raising an error
+                return
             
             try:
-                # Create connection pool
-                self.pool = await asyncpg.create_pool(database_url)
+                logger.info("Attempting to connect to PostgreSQL database...")
+                self.pool = await asyncpg.create_pool(
+                    database_url,
+                    min_size=1,
+                    max_size=10,
+                    command_timeout=30
+                )
                 logger.info("Successfully connected to PostgreSQL database")
                 
                 # Create tables if they don't exist
                 async with self.pool.acquire() as conn:
+                    logger.info("Creating/verifying database tables...")
                     await conn.execute('''
                         CREATE TABLE IF NOT EXISTS guild_config (
                             guild_id BIGINT PRIMARY KEY,
@@ -67,10 +89,12 @@ class ConfigManager:
                             FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
                         )
                     ''')
-                logger.info("Database tables created/verified successfully")
+                    logger.info("Database tables created/verified successfully")
             except Exception as e:
                 logger.error(f"Error connecting to database: {str(e)}")
-                return  # Return instead of raising an error
+                logger.error(f"Error type: {type(e).__name__}")
+                logger.error(f"Error details: {str(e)}")
+                return
 
     async def _ensure_guild_exists(self, guild_id: int):
         async with self.pool.acquire() as conn:
