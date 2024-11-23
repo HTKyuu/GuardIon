@@ -1,334 +1,257 @@
-import aiosqlite
+import os
+import asyncpg
+from dotenv import load_dotenv
+import datetime
 import discord
 import asyncio
-import os
-from datetime import datetime, timezone
+
+load_dotenv()
 
 class ConfigManager:
     def __init__(self):
-        # Create data directory if it doesn't exist
-        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
-        os.makedirs(self.data_dir, exist_ok=True)
+        self.pool = None
         
-        # Set database file path in the data directory
-        self.db_file = os.path.join(self.data_dir, "bot_config.db")
-        self.initialized = False
-        self._lock = asyncio.Lock()
-
     async def init(self):
-        if self.initialized:
-            return
-
-        async with self._lock:
-            if self.initialized:
-                return
+        if not self.pool:
+            # Get PostgreSQL connection URL from Railway's environment variable
+            database_url = os.getenv('DATABASE_URL')
+            if not database_url:
+                raise ValueError("DATABASE_URL environment variable not set")
             
-            try:
-                async with aiosqlite.connect(self.db_file) as db:
-                    # Store timestamps in UTC
-                    await db.execute("PRAGMA timezone='UTC'")
-                    
-                    # Create tables if they don't exist
-                    await db.execute('''
-                        CREATE TABLE IF NOT EXISTS guild_config (
-                            guild_id INTEGER PRIMARY KEY,
-                            log_channel_id INTEGER,
-                            welcome_channel_id INTEGER,
-                            auto_role_id INTEGER,
-                            log_enabled BOOLEAN DEFAULT 0,
-                            welcome_enabled BOOLEAN DEFAULT 0,
-                            auto_role_enabled BOOLEAN DEFAULT 0,
-                            anti_invite_enabled BOOLEAN DEFAULT 0
-                        )
-                    ''')
-
-                    # Add anti_invite_enabled column if it doesn't exist
-                    try:
-                        await db.execute('ALTER TABLE guild_config ADD COLUMN anti_invite_enabled BOOLEAN DEFAULT 0')
-                    except:
-                        pass  # Column already exists
-                    
-                    # Create warnings table
-                    await db.execute('''
-                        CREATE TABLE IF NOT EXISTS warnings (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            guild_id INTEGER,
-                            user_id INTEGER,
-                            moderator_id INTEGER,
-                            reason TEXT,
-                            timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000+00:00', 'now')),
-                            FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
-                        )
-                    ''')
-
-                    # Create tempbans table
-                    await db.execute('''
-                        CREATE TABLE IF NOT EXISTS tempbans (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            guild_id INTEGER,
-                            user_id INTEGER,
-                            moderator_id INTEGER,
-                            reason TEXT,
-                            unban_time TEXT NOT NULL,
-                            timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000+00:00', 'now')),
-                            active BOOLEAN DEFAULT 1,
-                            FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
-                        )
-                    ''')
-                    await db.commit()
-            except Exception as e:
-                print(f"Error initializing database: {e}")
+            # Create connection pool
+            self.pool = await asyncpg.create_pool(database_url)
             
-            self.initialized = True
+            # Create tables if they don't exist
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS guild_config (
+                        guild_id BIGINT PRIMARY KEY,
+                        log_channel_id BIGINT,
+                        welcome_channel_id BIGINT,
+                        auto_role_id BIGINT,
+                        log_enabled BOOLEAN DEFAULT false,
+                        welcome_enabled BOOLEAN DEFAULT false,
+                        auto_role_enabled BOOLEAN DEFAULT false,
+                        anti_invite_enabled BOOLEAN DEFAULT false
+                    )
+                ''')
+                
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS warnings (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT,
+                        user_id BIGINT,
+                        moderator_id BIGINT,
+                        reason TEXT,
+                        timestamp TIMESTAMP WITH TIME ZONE
+                    )
+                ''')
+                
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS tempbans (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT,
+                        user_id BIGINT,
+                        moderator_id BIGINT,
+                        reason TEXT,
+                        unban_time TIMESTAMP WITH TIME ZONE,
+                        timestamp TIMESTAMP WITH TIME ZONE,
+                        active BOOLEAN DEFAULT true,
+                        FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
+                    )
+                ''')
 
     async def _ensure_guild_exists(self, guild_id: int):
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'INSERT OR IGNORE INTO guild_config (guild_id) VALUES (?)',
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                'INSERT OR IGNORE INTO guild_config (guild_id) VALUES ($1)',
                 (guild_id,)
             )
-            await db.commit()
 
     # Log Channel Methods
     async def set_log_channel(self, guild_id: int, channel_id: int):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET log_channel_id = ?, log_enabled = 1 WHERE guild_id = ?',
-                (channel_id, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, log_channel_id)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET log_channel_id = $2, log_enabled = true
+            ''', guild_id, channel_id)
 
     async def get_log_channel(self, guild_id: int) -> int:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT log_channel_id, log_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if result and result[1]:  # Check if logging is enabled
-                    return result[0]
-                return None
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT log_channel_id, log_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            if record and record['log_enabled']:
+                return record['log_channel_id']
+            return None
 
     async def toggle_logging(self, guild_id: int, enabled: bool):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET log_enabled = ? WHERE guild_id = ?',
-                (enabled, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, log_enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET log_enabled = $2
+            ''', guild_id, enabled)
 
     async def is_logging_enabled(self, guild_id: int) -> bool:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT log_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                return bool(result[0]) if result else False
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT log_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            return record['log_enabled'] if record else False
 
     # Welcome Channel Methods
     async def set_welcome_channel(self, guild_id: int, channel_id: int):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET welcome_channel_id = ?, welcome_enabled = 1 WHERE guild_id = ?',
-                (channel_id, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, welcome_channel_id)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET welcome_channel_id = $2, welcome_enabled = true
+            ''', guild_id, channel_id)
 
     async def get_welcome_channel(self, guild_id: int) -> int:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT welcome_channel_id, welcome_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if result and result[1]:  # Check if welcome messages are enabled
-                    return result[0]
-                return None
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT welcome_channel_id, welcome_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            if record and record['welcome_enabled']:
+                return record['welcome_channel_id']
+            return None
 
     async def toggle_welcome(self, guild_id: int, enabled: bool):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET welcome_enabled = ? WHERE guild_id = ?',
-                (enabled, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, welcome_enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET welcome_enabled = $2
+            ''', guild_id, enabled)
 
     async def is_welcome_enabled(self, guild_id: int) -> bool:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT welcome_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                return bool(result[0]) if result else False
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT welcome_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            return record['welcome_enabled'] if record else False
 
     # Auto Role Methods
     async def set_auto_role(self, guild_id: int, role_id: int):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET auto_role_id = ?, auto_role_enabled = 1 WHERE guild_id = ?',
-                (role_id, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, auto_role_id)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET auto_role_id = $2, auto_role_enabled = true
+            ''', guild_id, role_id)
 
     async def get_auto_role(self, guild_id: int) -> int:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT auto_role_id, auto_role_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if result and result[1]:  # Check if auto-role is enabled
-                    return result[0]
-                return None
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT auto_role_id, auto_role_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            if record and record['auto_role_enabled']:
+                return record['auto_role_id']
+            return None
 
     async def toggle_auto_role(self, guild_id: int, enabled: bool):
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET auto_role_enabled = ? WHERE guild_id = ?',
-                (enabled, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, auto_role_enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET auto_role_enabled = $2
+            ''', guild_id, enabled)
 
     async def is_auto_role_enabled(self, guild_id: int) -> bool:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT auto_role_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                return bool(result[0]) if result else False
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT auto_role_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            return record['auto_role_enabled'] if record else False
 
     # Anti-invite methods
     async def set_anti_invite(self, guild_id: int, enabled: bool) -> bool:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            await db.execute(
-                'UPDATE guild_config SET anti_invite_enabled = ? WHERE guild_id = ?',
-                (enabled, guild_id)
-            )
-            await db.commit()
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO guild_config (guild_id, anti_invite_enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (guild_id)
+                DO UPDATE SET anti_invite_enabled = $2
+            ''', guild_id, enabled)
             return True
 
     async def is_anti_invite_enabled(self, guild_id: int) -> bool:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT anti_invite_enabled FROM guild_config WHERE guild_id = ?',
-                (guild_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                return bool(result[0]) if result else False
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow('SELECT anti_invite_enabled FROM guild_config WHERE guild_id = $1', guild_id)
+            return record['anti_invite_enabled'] if record else False
 
     # Warning Methods
     async def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         await self._ensure_guild_exists(guild_id)
-        async with aiosqlite.connect(self.db_file) as db:
-            cursor = await db.execute(
-                'INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES (?, ?, ?, ?)',
-                (guild_id, user_id, moderator_id, reason)
-            )
-            await db.commit()
-            return cursor.lastrowid
+        async with self.pool.acquire() as conn:
+            cursor = await conn.execute('''
+                INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp)
+                VALUES ($1, $2, $3, $4, $5)
+            ''', guild_id, user_id, moderator_id, reason, datetime.datetime.now(datetime.timezone.utc))
+            return cursor.fetchone()[0]
 
     async def get_warnings(self, guild_id: int, user_id: int) -> list:
-        async with aiosqlite.connect(self.db_file) as db:
-            async with db.execute(
-                'SELECT id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC',
-                (guild_id, user_id)
-            ) as cursor:
-                warnings = await cursor.fetchall()
-                processed_warnings = []
-                for warning in warnings:
-                    warning_id, mod_id, reason, timestamp = warning
-                    try:
-                        # Try parsing with milliseconds and timezone
-                        dt = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S.%f%z')
-                    except ValueError:
-                        try:
-                            # Try parsing without timezone (old format)
-                            dt = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
-                            # Convert to UTC
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        except ValueError:
-                            # If all else fails, use current time
-                            dt = datetime.now(timezone.utc)
-                    processed_warnings.append((warning_id, mod_id, reason, dt))
-                return processed_warnings
+        async with self.pool.acquire() as conn:
+            return await conn.fetch('''
+                SELECT id, moderator_id, reason, timestamp
+                FROM warnings
+                WHERE guild_id = $1 AND user_id = $2
+                ORDER BY timestamp DESC
+            ''', guild_id, user_id)
 
-    async def remove_warning(self, guild_id: int, warning_id: int) -> bool:
-        async with aiosqlite.connect(self.db_file) as db:
-            cursor = await db.execute(
-                'DELETE FROM warnings WHERE guild_id = ? AND id = ?',
-                (guild_id, warning_id)
-            )
-            await db.commit()
-            return cursor.rowcount > 0
+    async def remove_warning(self, warning_id: int, guild_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            await conn.execute('DELETE FROM warnings WHERE id = $1 AND guild_id = $2', warning_id, guild_id)
+            return True
 
     async def clear_warnings(self, guild_id: int, user_id: int) -> int:
-        async with aiosqlite.connect(self.db_file) as db:
-            cursor = await db.execute(
-                'DELETE FROM warnings WHERE guild_id = ? AND user_id = ?',
-                (guild_id, user_id)
-            )
-            await db.commit()
-            return cursor.rowcount
+        async with self.pool.acquire() as conn:
+            await conn.execute('DELETE FROM warnings WHERE guild_id = $1 AND user_id = $2', guild_id, user_id)
+            return 1
 
     # Tempban Methods
-    async def add_tempban(self, guild_id: int, user_id: int, moderator_id: int, reason: str, unban_time: str) -> int:
-        async with aiosqlite.connect(self.db_file) as db:
-            cursor = await db.execute(
-                'INSERT INTO tempbans (guild_id, user_id, moderator_id, reason, unban_time) VALUES (?, ?, ?, ?, ?)',
-                (guild_id, user_id, moderator_id, reason, unban_time)
-            )
-            await db.commit()
-            return cursor.lastrowid
+    async def add_tempban(self, guild_id: int, user_id: int, moderator_id: int, reason: str, unban_time: datetime.datetime) -> int:
+        async with self.pool.acquire() as conn:
+            cursor = await conn.execute('''
+                INSERT INTO tempbans (guild_id, user_id, moderator_id, reason, unban_time, timestamp)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            ''', guild_id, user_id, moderator_id, reason, unban_time, datetime.datetime.now(datetime.timezone.utc))
+            return cursor.fetchone()[0]
 
     async def get_active_tempbans(self, guild_id: int = None) -> list:
-        async with aiosqlite.connect(self.db_file) as db:
+        async with self.pool.acquire() as conn:
             if guild_id:
                 query = '''
                     SELECT guild_id, user_id, moderator_id, reason, unban_time, timestamp 
                     FROM tempbans 
-                    WHERE guild_id = ? AND active = 1 AND unban_time <= strftime('%Y-%m-%dT%H:%M:%S.000+00:00', 'now')
+                    WHERE guild_id = $1 AND active = true AND unban_time > $2
                 '''
-                params = (guild_id,)
+                params = (guild_id, datetime.datetime.now(datetime.timezone.utc))
             else:
                 query = '''
                     SELECT guild_id, user_id, moderator_id, reason, unban_time, timestamp 
                     FROM tempbans 
-                    WHERE active = 1 AND unban_time <= strftime('%Y-%m-%dT%H:%M:%S.000+00:00', 'now')
+                    WHERE active = true AND unban_time > $1
                 '''
-                params = ()
+                params = (datetime.datetime.now(datetime.timezone.utc),)
             
-            async with db.execute(query, params) as cursor:
-                tempbans = await cursor.fetchall()
-                return [(guild_id, user_id, mod_id, reason, 
-                        datetime.strptime(unban_time, '%Y-%m-%dT%H:%M:%S.%f%z'),
-                        datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S.%f%z'))
-                        for guild_id, user_id, mod_id, reason, unban_time, timestamp in tempbans]
+            return await conn.fetch(query, *params)
 
     async def deactivate_tempban(self, guild_id: int, user_id: int) -> bool:
-        async with aiosqlite.connect(self.db_file) as db:
-            cursor = await db.execute(
-                'UPDATE tempbans SET active = 0 WHERE guild_id = ? AND user_id = ? AND active = 1',
-                (guild_id, user_id)
-            )
-            await db.commit()
-            return cursor.rowcount > 0
+        async with self.pool.acquire() as conn:
+            await conn.execute('UPDATE tempbans SET active = false WHERE guild_id = $1 AND user_id = $2 AND active = true', guild_id, user_id)
+            return True
 
     # Utility method for sending logs
     async def send_log(self, guild: discord.Guild, embed: discord.Embed):
