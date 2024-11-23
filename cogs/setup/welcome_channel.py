@@ -18,7 +18,7 @@ class WelcomeChannel(commands.Cog):
         enabled="Whether to enable or disable welcome messages"
     )
     @admin_command()
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def setwelcome(self, interaction: discord.Interaction, channel: discord.TextChannel = None, enabled: bool = None):
         try:
             if channel is None and enabled is None:

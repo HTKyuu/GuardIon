@@ -18,7 +18,7 @@ class AutoRole(commands.Cog):
         enabled="Whether to enable or disable auto-role"
     )
     @admin_command()
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def setrole(self, interaction: discord.Interaction, role: discord.Role = None, enabled: bool = None):
         try:
             if role is None and enabled is None:
