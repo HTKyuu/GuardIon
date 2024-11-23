@@ -96,23 +96,5 @@ class WelcomeChannel(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        welcome_channel_id = await self.config.get_welcome_channel(member.guild.id)
-        if welcome_channel_id and await self.config.is_welcome_enabled(member.guild.id):
-            try:
-                channel = member.guild.get_channel(welcome_channel_id)
-                if channel:
-                    embed = discord.Embed(
-                        title="Welcome!",
-                        description=f"Welcome {member.mention} to {member.guild.name}! 👋",
-                        color=discord.Color.green(),
-                        timestamp=member.joined_at
-                    )
-                    embed.set_thumbnail(url=member.display_avatar.url)
-                    await channel.send(embed=embed)
-            except discord.Forbidden:
-                pass  # Bot doesn't have permission to send messages
-
 async def setup(bot):
     await bot.add_cog(WelcomeChannel(bot))
