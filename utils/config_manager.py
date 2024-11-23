@@ -4,8 +4,11 @@ from dotenv import load_dotenv
 import datetime
 import discord
 import asyncio
+import logging
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class ConfigManager:
     def __init__(self):
@@ -16,50 +19,58 @@ class ConfigManager:
             # Get PostgreSQL connection URL from Railway's environment variable
             database_url = os.getenv('DATABASE_URL')
             if not database_url:
-                raise ValueError("DATABASE_URL environment variable not set")
+                logger.error("DATABASE_URL environment variable not set!")
+                logger.info("Please set the DATABASE_URL in your Railway project variables")
+                return  # Return instead of raising an error
             
-            # Create connection pool
-            self.pool = await asyncpg.create_pool(database_url)
-            
-            # Create tables if they don't exist
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS guild_config (
-                        guild_id BIGINT PRIMARY KEY,
-                        log_channel_id BIGINT,
-                        welcome_channel_id BIGINT,
-                        auto_role_id BIGINT,
-                        log_enabled BOOLEAN DEFAULT false,
-                        welcome_enabled BOOLEAN DEFAULT false,
-                        auto_role_enabled BOOLEAN DEFAULT false,
-                        anti_invite_enabled BOOLEAN DEFAULT false
-                    )
-                ''')
+            try:
+                # Create connection pool
+                self.pool = await asyncpg.create_pool(database_url)
+                logger.info("Successfully connected to PostgreSQL database")
                 
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS warnings (
-                        id SERIAL PRIMARY KEY,
-                        guild_id BIGINT,
-                        user_id BIGINT,
-                        moderator_id BIGINT,
-                        reason TEXT,
-                        timestamp TIMESTAMP WITH TIME ZONE
-                    )
-                ''')
-                
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS tempbans (
-                        id SERIAL PRIMARY KEY,
-                        guild_id BIGINT,
-                        user_id BIGINT,
-                        moderator_id BIGINT,
-                        reason TEXT,
-                        unban_time TIMESTAMP WITH TIME ZONE,
-                        timestamp TIMESTAMP WITH TIME ZONE,
-                        active BOOLEAN DEFAULT true,
-                        FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
-                    )
-                ''')
+                # Create tables if they don't exist
+                async with self.pool.acquire() as conn:
+                    await conn.execute('''
+                        CREATE TABLE IF NOT EXISTS guild_config (
+                            guild_id BIGINT PRIMARY KEY,
+                            log_channel_id BIGINT,
+                            welcome_channel_id BIGINT,
+                            auto_role_id BIGINT,
+                            log_enabled BOOLEAN DEFAULT false,
+                            welcome_enabled BOOLEAN DEFAULT false,
+                            auto_role_enabled BOOLEAN DEFAULT false,
+                            anti_invite_enabled BOOLEAN DEFAULT false
+                        )
+                    ''')
+                    
+                    await conn.execute('''
+                        CREATE TABLE IF NOT EXISTS warnings (
+                            id SERIAL PRIMARY KEY,
+                            guild_id BIGINT,
+                            user_id BIGINT,
+                            moderator_id BIGINT,
+                            reason TEXT,
+                            timestamp TIMESTAMP WITH TIME ZONE
+                        )
+                    ''')
+                    
+                    await conn.execute('''
+                        CREATE TABLE IF NOT EXISTS tempbans (
+                            id SERIAL PRIMARY KEY,
+                            guild_id BIGINT,
+                            user_id BIGINT,
+                            moderator_id BIGINT,
+                            reason TEXT,
+                            unban_time TIMESTAMP WITH TIME ZONE,
+                            timestamp TIMESTAMP WITH TIME ZONE,
+                            active BOOLEAN DEFAULT true,
+                            FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
+                        )
+                    ''')
+                logger.info("Database tables created/verified successfully")
+            except Exception as e:
+                logger.error(f"Error connecting to database: {str(e)}")
+                return  # Return instead of raising an error
 
     async def _ensure_guild_exists(self, guild_id: int):
         async with self.pool.acquire() as conn:
