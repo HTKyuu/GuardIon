@@ -52,6 +52,8 @@ class ConfigManager:
                 # Create tables if they don't exist
                 async with self.pool.acquire() as conn:
                     logger.info("Creating/verifying database tables...")
+                    
+                    # Create guild_config table
                     await conn.execute('''
                         CREATE TABLE IF NOT EXISTS guild_config (
                             guild_id BIGINT PRIMARY KEY,
@@ -65,30 +67,50 @@ class ConfigManager:
                         )
                     ''')
                     
-                    await conn.execute('''
-                        CREATE TABLE IF NOT EXISTS warnings (
-                            id SERIAL PRIMARY KEY,
-                            guild_id BIGINT,
-                            user_id BIGINT,
-                            moderator_id BIGINT,
-                            reason TEXT,
-                            timestamp TIMESTAMP WITH TIME ZONE
-                        )
-                    ''')
+                    # Create warnings table with a safer approach
+                    try:
+                        await conn.execute('''
+                            DO $$ 
+                            BEGIN
+                                CREATE TABLE IF NOT EXISTS warnings (
+                                    id BIGSERIAL PRIMARY KEY,
+                                    guild_id BIGINT,
+                                    user_id BIGINT,
+                                    moderator_id BIGINT,
+                                    reason TEXT,
+                                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                                );
+                            EXCEPTION 
+                                WHEN duplicate_table THEN 
+                                    NULL;
+                            END $$;
+                        ''')
+                    except Exception as e:
+                        logger.error(f"Error creating warnings table: {str(e)}")
                     
-                    await conn.execute('''
-                        CREATE TABLE IF NOT EXISTS tempbans (
-                            id SERIAL PRIMARY KEY,
-                            guild_id BIGINT,
-                            user_id BIGINT,
-                            moderator_id BIGINT,
-                            reason TEXT,
-                            unban_time TIMESTAMP WITH TIME ZONE,
-                            timestamp TIMESTAMP WITH TIME ZONE,
-                            active BOOLEAN DEFAULT true,
-                            FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id)
-                        )
-                    ''')
+                    # Create tempbans table with a safer approach
+                    try:
+                        await conn.execute('''
+                            DO $$ 
+                            BEGIN
+                                CREATE TABLE IF NOT EXISTS tempbans (
+                                    id BIGSERIAL PRIMARY KEY,
+                                    guild_id BIGINT,
+                                    user_id BIGINT,
+                                    moderator_id BIGINT,
+                                    reason TEXT,
+                                    unban_time TIMESTAMP WITH TIME ZONE,
+                                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                                    active BOOLEAN DEFAULT true
+                                );
+                            EXCEPTION 
+                                WHEN duplicate_table THEN 
+                                    NULL;
+                            END $$;
+                        ''')
+                    except Exception as e:
+                        logger.error(f"Error creating tempbans table: {str(e)}")
+                    
                     logger.info("Database tables created/verified successfully")
             except Exception as e:
                 logger.error(f"Error connecting to database: {str(e)}")
