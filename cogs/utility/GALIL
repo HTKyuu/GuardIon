@@ -1,0 +1,134 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- 🔧 ESP settings
+local espEnabled = true
+local espHighlights = {}
+
+-- 🔧 HITBOX settings
+local hitboxEnabled = false
+local HITBOX_Y = 5
+-- local HITBOX_Z = hrp.Size.Z
+local HITBOX_X = 5
+local TAG_NAME = "HitboxExpanded"
+local BOX_NAME = "HitboxBox"
+
+-- ===========================
+-- ESP FUNCTIONS
+-- ===========================
+local function addHighlight(character)
+    if not character or espHighlights[character] then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.FillColor = Color3.fromRGB(200, 0, 255)
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.FillTransparency = 0.8
+    highlight.OutlineTransparency = 0.5
+    highlight.Adornee = character
+    highlight.Parent = character
+
+    espHighlights[character] = highlight
+end
+
+local function removeHighlight(character)
+    if espHighlights[character] then
+        espHighlights[character]:Destroy()
+        espHighlights[character] = nil
+    end
+end
+
+local function removeAllHighlights()
+    for character, _ in pairs(espHighlights) do
+        removeHighlight(character)
+    end
+end
+
+-- ===========================
+-- HITBOX FUNCTIONS
+-- ===========================
+local function expandHitbox(character)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    -- Skip if already expanded
+    if hrp:FindFirstChild(TAG_NAME) then return end
+
+    -- Tag to prevent re-expanding
+    local tag = Instance.new("BoolValue")
+    tag.Name = TAG_NAME
+    tag.Parent = hrp
+
+    -- Set custom hitbox size
+	local HITBOX_Z = hrp.Size.Z
+    hrp.Size = Vector3.new(HITBOX_X, HITBOX_Y, HITBOX_Z)
+    hrp.Transparency = 1
+    hrp.CanCollide = false
+
+    -- Visual box
+    local box = Instance.new("BoxHandleAdornment")
+    box.Name = BOX_NAME
+    box.Adornee = hrp
+    box.Size = hrp.Size
+    box.Color3 = Color3.fromRGB(205, 50, 0)
+    box.Transparency = 0.90
+    box.AlwaysOnTop = true
+    box.ZIndex = 10
+    box.Parent = hrp
+end
+
+-- ===========================
+-- MAIN SCAN LOOP
+-- ===========================
+local function scanLoop()
+    while true do
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                -- ===========================
+                -- ESP CHECK
+                -- ===========================
+                if espEnabled then
+                    if player.Team ~= LocalPlayer.Team then
+                        addHighlight(player.Character)
+                    else
+                        removeHighlight(player.Character)
+                    end
+                end
+
+                -- ===========================
+                -- HITBOX CHECK
+                -- ===========================
+                if hitboxEnabled then
+                    if player.Team ~= LocalPlayer.Team then
+                        expandHitbox(player.Character)
+                    end
+                end
+            end
+        end
+        task.wait(1) -- update every second
+    end
+end
+
+-- ===========================
+-- INPUT HANDLERS
+-- ===========================
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+
+    -- Toggle ESP
+    if input.KeyCode == Enum.KeyCode.K then
+        espEnabled = not espEnabled
+        if not espEnabled then
+            removeAllHighlights()
+        end
+    end
+
+    -- Toggle HITBOX
+    if input.KeyCode == Enum.KeyCode.L then
+        hitboxEnabled = not hitboxEnabled
+    end
+end)
+warn("MinDuelsToShowAttribute found for PassButton")
+
+-- Start scan loop
+task.spawn(scanLoop)
