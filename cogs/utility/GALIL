@@ -10,7 +10,7 @@ local espHighlights = {}
 local hitboxEnabled = false
 local HITBOX_Y = 5
 -- local HITBOX_Z = hrp.Size.Z
-local HITBOX_X = 5
+local HITBOX_X = 4
 local TAG_NAME = "HitboxExpanded"
 local BOX_NAME = "HitboxBox"
 
@@ -47,6 +47,7 @@ end
 -- ===========================
 -- HITBOX FUNCTIONS
 -- ===========================
+
 local function expandHitbox(character)
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -77,6 +78,33 @@ local function expandHitbox(character)
     box.Parent = hrp
 end
 
+local function resetHitbox(character)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+	local HITBOX_Z = hrp.Size.Z
+    if not hrp then return end
+
+    local tag = hrp:FindFirstChild(TAG_NAME)
+    if tag then tag:Destroy() end
+
+    -- Restore default size (Roblox humanoid HRP default is 2,2,1)
+    -- If you want dynamic restore, store original sizes; here we assume default:
+    hrp.Size = Vector3.new(2, 2, HITBOX_Z)
+    hrp.Transparency = 1
+
+    -- Remove the visual box
+    local box = hrp:FindFirstChild(BOX_NAME)
+    if box then box:Destroy() end
+end
+
+local function resetAllHitboxes()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            resetHitbox(player.Character)
+        end
+    end
+end
+
+
 -- ===========================
 -- MAIN SCAN LOOP
 -- ===========================
@@ -101,6 +129,8 @@ local function scanLoop()
                 if hitboxEnabled then
                     if player.Team ~= LocalPlayer.Team then
                         expandHitbox(player.Character)
+					else
+						resetHitbox(player.Character)
                     end
                 end
             end
@@ -124,9 +154,12 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 
     -- Toggle HITBOX
-    if input.KeyCode == Enum.KeyCode.L then
-        hitboxEnabled = not hitboxEnabled
-    end
+	if input.KeyCode == Enum.KeyCode.L then
+		hitboxEnabled = not hitboxEnabled
+		if not hitboxEnabled then
+			resetAllHitboxes()
+		end
+	end
 end)
 warn("MinDuelsToShowAttribute found for PassButton")
 
