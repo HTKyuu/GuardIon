@@ -7,7 +7,7 @@ local espEnabled = false
 local espHighlights = {}
 
 -- 🔧 HITBOX settings
-local hitboxEnabled = false
+local hitboxEnabled = true
 local HITBOX_Y = 5
 -- local HITBOX_Z = hrp.Size.Z
 local HITBOX_X = 4
@@ -65,6 +65,17 @@ local function expandHitbox(character)
     hrp.Size = Vector3.new(HITBOX_X, HITBOX_Y, HITBOX_Z)
     hrp.Transparency = 1
     hrp.CanCollide = false
+
+    -- Visual box
+    local box = Instance.new("BoxHandleAdornment")
+    box.Name = BOX_NAME
+    box.Adornee = hrp
+    box.Size = hrp.Size
+    box.Color3 = Color3.fromRGB(205, 50, 0)
+    box.Transparency = 1
+    box.AlwaysOnTop = true
+    box.ZIndex = 10
+    box.Parent = hrp
 end
 
 local function resetHitbox(character)
