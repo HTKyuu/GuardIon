@@ -61,7 +61,9 @@ local function expandHitbox(character)
     tag.Parent = hrp
 
     -- Set custom hitbox size
-	local HITBOX_Z = hrp.Size.Z
+	local size = hrp.Size
+	if not size then return end
+	local HITBOX_Z = size.Z
     hrp.Size = Vector3.new(HITBOX_X, HITBOX_Y, HITBOX_Z)
     hrp.Transparency = 1
     hrp.CanCollide = false
@@ -79,10 +81,14 @@ local function expandHitbox(character)
 end
 
 local function resetHitbox(character)
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-	local HITBOX_Z = hrp.Size.Z
-    if not hrp then return end
-
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	
+	local size = hrp.Size
+	if not size then return end
+	
+	local HITBOX_Z = size.Z
+    
     local tag = hrp:FindFirstChild(TAG_NAME)
     if tag then tag:Destroy() end
 
